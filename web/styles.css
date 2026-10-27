@@ -1,0 +1,31 @@
+:root {
+  color: #20252b;
+  background: #f7f8f9;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; }
+.page-shell { width: min(820px, calc(100% - 32px)); margin: 0 auto; padding: 32px 0 56px; }
+.page-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid #dfe3e6; padding-bottom: 16px; }
+h1 { margin: 0; font-size: 24px; font-weight: 650; }
+.button, .back-link { border: 1px solid #c6cdd2; border-radius: 4px; background: #fff; color: #245565; cursor: pointer; font: inherit; padding: 7px 11px; text-decoration: none; }
+.button:disabled { cursor: wait; opacity: .6; }
+.status-bar { color: #69757d; font-size: 13px; padding: 12px 0; }
+.file-list { border-top: 1px solid #dfe3e6; background: #fff; }
+.file-row { display: flex; align-items: center; gap: 16px; min-height: 46px; border-bottom: 1px solid #e8ebed; color: inherit; padding: 8px 12px; text-decoration: none; }
+.file-row:hover { background: #f3f7f5; }
+.file-info { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.file-icon { flex: 0 0 20px; font-size: 16px; line-height: 1; text-align: center; }
+.file-name { overflow-wrap: anywhere; font-size: 14px; }
+.file-kind { color: #7b858d; flex: 0 0 auto; font-size: 12px; }
+.directory-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; border-top: 1px solid #dfe3e6; background: #fff; padding: 12px; }
+.directory-actions { display: flex; flex: 0 0 auto; gap: 8px; }
+.directory-name { overflow-wrap: anywhere; }
+.empty { color: #75818b; padding: 28px 0; text-align: center; }
+
+@media (max-width: 640px) {
+  .page-shell { width: min(100% - 24px, 820px); padding-top: 20px; }
+  .file-row { align-items: flex-start; }
+  .file-info { align-items: flex-start; flex-direction: column; gap: 2px; }
+}

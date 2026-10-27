@@ -1,0 +1,24 @@
+# Local secrets — never commit
+.secrets/
+
+# Local configuration and environment
+.env
+.env.*
+!.env.example
+hfs-settings.json
+
+# Runtime database (contains local shared paths)
+*.sqlite3
+*.sqlite3-*
+
+# Python and tool caches
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.ruff_cache/
+.pytest_cache/
+AIBridgeCache/
+
+# macOS
+.DS_Store

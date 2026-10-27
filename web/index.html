@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>局域网文件</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <main class="page-shell">
+    <header class="page-header">
+      <div>
+        <h1>共享文件</h1>
+      </div>
+      <button id="refresh" class="button" type="button">刷新</button>
+    </header>
+
+    <section class="status-bar" aria-live="polite">
+      <span id="status">正在读取文件列表…</span>
+    </section>
+
+    <section id="batches" class="batches" aria-live="polite"></section>
+    <p id="empty" class="empty" hidden>还没有收到文件。</p>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>
