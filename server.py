@@ -816,52 +816,86 @@ def close_existing_hfs(port: int) -> None:
         time.sleep(0.05)
 
 
-if __name__ == "__main__":
-    try:
-        from tkinterdnd2 import TkinterDnD
-        from client import UploadClient
-    except ModuleNotFoundError as error:
-        if error.name == "_tkinter":
-            raise SystemExit(
-                "当前 Python 没有 Tk 支持，请使用 /usr/bin/python3 server.py"
-            ) from error
-        raise SystemExit(
-            "缺少 tkinterdnd2，请先执行: /usr/bin/python3 -m pip install --user tkinterdnd2"
-        ) from error
+def main() -> None:
+    import argparse
 
+    from hfs_frpc import start_frpc, stop_frpc
+    from hfs_terminal import install_terminal_log
+
+    parser = argparse.ArgumentParser(description="HFS 本地文件共享与视频服务")
+    parser.add_argument("--headless", action="store_true", help="无头模式，不打开桌面窗口，也不需要 Tk")
+    args = parser.parse_args()
+
+    TkinterDnD = None
+    UploadClient = None
+    if not args.headless:
+        try:
+            from tkinterdnd2 import TkinterDnD
+            from client import UploadClient
+        except ModuleNotFoundError as error:
+            if error.name == "_tkinter":
+                raise SystemExit(
+                    "当前 Python 没有 Tk 支持，请使用 /usr/bin/python3 server.py，或添加 --headless"
+                ) from error
+            raise SystemExit(
+                "缺少 tkinterdnd2，请先安装该依赖，或使用 --headless"
+            ) from error
+
+    install_terminal_log()
     initialize_database()
     host = os.environ.get("HFS_HOST", "0.0.0.0")
     port = configured_port()
     close_existing_hfs(port)
     server_controller = ServerController(host, port)
-    server_controller.start()
+    frpc_process = None
+    stop_event = threading.Event()
+    previous_handlers = {}
 
-    print(f"HFS listening on http://{host}:{port}")
-    print(f"登记数据库: {DATABASE_PATH}")
-    print(f"本机访问: http://127.0.0.1:{port}")
-    addresses = lan_addresses()
-    if addresses:
+    def request_stop(signum, frame) -> None:
+        stop_event.set()
+
+    if args.headless:
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            previous_handlers[signum] = signal.signal(signum, request_stop)
+
+    try:
+        server_controller.start()
+        print(f"HFS listening on http://{host}:{port}")
+        print(f"登记数据库: {DATABASE_PATH}")
+        print(f"本机访问: http://127.0.0.1:{port}")
+        addresses = lan_addresses()
         for address in addresses:
             print(f"局域网访问: http://{address}:{port}")
-    else:
-        print("局域网访问地址未能自动探测，请查看本机网络设置")
+        if not addresses:
+            print("局域网访问地址未能自动探测，请查看本机网络设置")
 
-    from hfs_frpc import start_frpc, stop_frpc
-
-    frpc_process = None
-    lan_urls = [f"http://{address}:{port}" for address in addresses]
-    try:
-        root = TkinterDnD.Tk()
-        frpc_process = start_frpc()
-        UploadClient(
-            root,
-            f"http://127.0.0.1:{port}",
-            lan_urls,
-            server_controller.change_port,
-            set_download_limit_kbps,
-            configured_download_limit_kbps(),
-        )
-        root.mainloop()
+        if args.headless:
+            print("无头模式：使用已有共享登记；按 Ctrl+C 停止 HFS 和本次启动的 FRPC。")
+            frpc_process = start_frpc()
+            stop_event.wait()
+        else:
+            assert TkinterDnD is not None and UploadClient is not None
+            root = TkinterDnD.Tk()
+            frpc_process = start_frpc()
+            UploadClient(
+                root,
+                f"http://127.0.0.1:{port}",
+                [f"http://{address}:{port}" for address in addresses],
+                server_controller.change_port,
+                set_download_limit_kbps,
+                configured_download_limit_kbps(),
+            )
+            root.mainloop()
+    except KeyboardInterrupt:
+        pass
     finally:
-        server_controller.stop()
-        stop_frpc(frpc_process)
+        try:
+            server_controller.stop()
+        finally:
+            stop_frpc(frpc_process)
+            for signum, handler in previous_handlers.items():
+                signal.signal(signum, handler)
+
+
+if __name__ == "__main__":
+    main()

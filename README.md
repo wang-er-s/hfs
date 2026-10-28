@@ -83,7 +83,26 @@ export HFS_REGISTER_TOKEN='replace-with-a-local-secret'
 
 设置 `HFS_FRPC=0` 可禁用自动启动；`HFS_FRPC_CONFIG` 可指定配置路径。FRPC 的 `localPort` 必须与 HFS 端口一致，修改端口后需同步配置并重启。
 
+## 无头模式
+
+不打开桌面窗口，只运行文件服务和 FRPC：
+
+```bash
+python3 server.py --headless
+```
+
+无头模式不需要 Tk 或 tkinterdnd2，继续使用 `hfs.sqlite3` 中已登记的共享文件及目录。首次可通过 GUI 登记文件后退出，再切换到无头模式。按 `Ctrl+C` 或发送 `SIGTERM` 会停止 HTTP 服务和本次启动的 FRPC；已有外部 FRPC 不受影响。
+
+只运行 HFS、不启动 FRPC：
+
+```bash
+HFS_FRPC=0 python3 server.py --headless
+```
+
+无头模式仍在前台运行，并非自动后台化；终端日志继续只显示最近 20 行，重定向输出时保留完整日志。可用 `python3 server.py --help` 查看参数。
+
 网页每两秒请求 `/api/files` 刷新列表，其成功响应不再打印日志；错误及文件传输日志保留。
+
 ## 回归检查
 
-运行 `python3 -W error::ResourceWarning -m unittest -v test_server`，检查数据库连接的提交、回滚与关闭，以及视频完整读取、Range 请求、断开连接、阻塞超时和异常后的资源释放。测试使用临时文件、临时数据库和随机本机端口。
+运行 `python3 -W error::ResourceWarning -m unittest -v test_server test_headless`，检查数据库、视频 Range 传输、断连和超时资源释放，以及无 Tk 依赖启动、SIGINT/SIGTERM 正常退出。测试使用临时数据库及随机本机端口，不启动实际 FRPC 隧道。

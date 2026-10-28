@@ -19,6 +19,7 @@ from tkinter import (
     Frame,
     Label,
     PanedWindow,
+    PhotoImage,
     StringVar,
     Text,
     messagebox,
@@ -157,11 +158,16 @@ class UploadClient:
         self.update_lan_address(int(self.port.get()))
 
         root.title("HFS 局域网文件服务器")
+        # Keep the PhotoImage alive for Tk's window/application icon.
+        self.app_icon = PhotoImage(file=str(Path(__file__).resolve().parent / "assets" / "hfs.gif"))
+        root.iconphoto(True, self.app_icon)
+        self.toolbar_icon = self.app_icon.subsample(4, 4)
         root.geometry("1080x720")
         root.minsize(800, 560)
 
         toolbar = Frame(root, padx=12, pady=8, bg=self.colors["toolbar"])
         toolbar.pack(fill=X)
+        Label(toolbar, image=self.toolbar_icon, bg=self.colors["toolbar"]).pack(side=LEFT, padx=(0, 10))
         Button(toolbar, text="打开网页", command=self.open_public_url, style="Hfs.TButton").pack(side=LEFT)
         Button(toolbar, text="测试连接", command=self.test_connection, style="Hfs.TButton").pack(side=LEFT, padx=(6, 18))
         Label(toolbar, text="监听端口", bg=self.colors["toolbar"], fg=self.colors["text"]).pack(side=LEFT)
@@ -212,7 +218,7 @@ class UploadClient:
 
         log_header = Frame(log_panel, pady=5, bg=self.colors["log_header"])
         log_header.pack(fill=X)
-        Label(log_header, text="访问日志", anchor="w", bg=self.colors["log_header"], fg=self.colors["text"]).pack(side=LEFT, fill=X, expand=True)
+        Label(log_header, text="访问日志 · 最近 20 条", anchor="w", bg=self.colors["log_header"], fg=self.colors["text"]).pack(side=LEFT, fill=X, expand=True)
         self.log_view = Text(
             log_panel,
             wrap="none",
@@ -370,7 +376,7 @@ class UploadClient:
     def show_events(self, events: list[dict]) -> None:
         self.log_view.configure(state="normal")
         self.log_view.delete("1.0", "end")
-        for event in events:
+        for event in events[:20]:
             level = event.get("level", "info")
             self.log_view.insert("end", f"{event.get('time', '--:--:--')} ", "time")
             self.log_view.insert("end", f"{event.get('message', '')}\n", level)

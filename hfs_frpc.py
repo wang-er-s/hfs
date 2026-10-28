@@ -25,13 +25,25 @@ def start_frpc() -> subprocess.Popen | None:
         if existing.returncode == 0:
             print("检测到已有 FRPC，保留现有进程，本次不重复启动；请确认它使用正确配置。")
             return None
-        process = subprocess.Popen([binary, "-c", str(config)])
+        process = subprocess.Popen(
+            [binary, "-c", str(config)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+        )
     except OSError as error:
         print(f"FRPC 启动失败：{error}；本地 HFS 继续运行。")
         return None
     print(f"已启动 FRPC（PID {process.pid}），连接日志显示在当前终端。")
 
     def report_exit() -> None:
+        if process.stdout is not None:
+            with process.stdout:
+                for line in process.stdout:
+                    print(line, end="", flush=True)
         code = process.wait()
         if code:
             print(f"FRPC 已退出（状态 {code}），请检查连接日志；本地 HFS 仍可使用。")
