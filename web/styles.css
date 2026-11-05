@@ -15,6 +15,9 @@ h1 { margin: 0; font-size: 24px; font-weight: 650; }
 .file-list { border-top: 1px solid #dfe3e6; background: #fff; }
 .file-row { display: flex; align-items: center; gap: 16px; min-height: 46px; border-bottom: 1px solid #e8ebed; color: inherit; padding: 8px 12px; text-decoration: none; }
 .file-row:hover { background: #f3f7f5; }
+.file-link { flex: 1; min-width: 0; color: inherit; text-decoration: none; padding: 8px 0; }
+.file-link:focus-visible, .copy-address:focus-visible { outline: 2px solid #245565; outline-offset: 2px; }
+.copy-address { flex: 0 0 auto; min-height: 36px; font-size: 13px; }
 .file-info { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
 .file-icon { flex: 0 0 20px; font-size: 16px; line-height: 1; text-align: center; }
 .file-name { overflow-wrap: anywhere; font-size: 14px; }

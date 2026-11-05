@@ -11,9 +11,30 @@ function element(tag, className, text) {
   return node;
 }
 
+async function copyAddress(address) {
+  if (navigator.clipboard && window.isSecureContext) {
+    await navigator.clipboard.writeText(address);
+    return;
+  }
+  // HTTP 分享页面无法使用 Clipboard API，保留传统复制方式。
+  const input = element("textarea");
+  input.value = address;
+  input.style.cssText = "position:fixed;left:-9999px;top:0";
+  const focused = document.activeElement;
+  document.body.append(input);
+  try {
+    input.select();
+    if (!document.execCommand("copy")) throw new Error("浏览器未允许复制");
+  } finally {
+    input.remove();
+    if (focused) focused.focus();
+  }
+}
+
 function itemLink(item) {
   const isDirectory = item.kind === "directory";
-  const link = element("a", "file-row");
+  const row = element("div", "file-row");
+  const link = element("a", "file-link");
   link.href = item.url || (isDirectory ? item.browse_url : item.download_url);
   if (!isDirectory) link.setAttribute("download", "");
   const icon = element("span", "file-icon", isDirectory ? "📁" : "📄");
@@ -22,7 +43,19 @@ function itemLink(item) {
   const info = element("div", "file-info");
   info.append(icon, label, kind);
   link.append(info);
-  return link;
+  const copy = element("button", "button copy-address", "复制地址");
+  copy.type = "button";
+  copy.setAttribute("aria-label", `复制 ${item.path || item.name} 的地址`);
+  copy.addEventListener("click", async () => {
+    try {
+      await copyAddress(link.href);
+      statusElement.textContent = "地址已复制";
+    } catch (error) {
+      statusElement.textContent = `复制失败：${error.message}`;
+    }
+  });
+  row.append(link, copy);
+  return row;
 }
 
 function renderRows(items) {
