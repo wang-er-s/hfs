@@ -452,6 +452,14 @@ class UploadClient:
         text = "已取消下载限速" if limit_kbps == 0 else f"下载限速已设为 {limit_kbps} KB/s"
         self.status.set(text)
 
+    @staticmethod
+    def open_request(request: urllib.request.Request, timeout: int):
+        if urlparse(request.full_url).hostname in {"127.0.0.1", "localhost", "::1"}:
+            return urllib.request.build_opener(urllib.request.ProxyHandler({})).open(
+                request, timeout=timeout
+            )
+        return urllib.request.urlopen(request, timeout=timeout)
+
     def post_json(self, path: str, payload: dict) -> dict:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         request = urllib.request.Request(
@@ -460,17 +468,17 @@ class UploadClient:
             headers={"Content-Type": "application/json", **self.headers()},
             method="POST",
         )
-        with urllib.request.urlopen(request, timeout=30) as response:
+        with self.open_request(request, timeout=30) as response:
             return json.loads(response.read().decode("utf-8"))
 
     def get_json(self, url: str, headers: dict[str, str] | None = None) -> dict:
         request = urllib.request.Request(url, headers=headers or {})
-        with urllib.request.urlopen(request, timeout=10) as response:
+        with self.open_request(request, timeout=10) as response:
             return json.loads(response.read().decode("utf-8"))
 
     def delete_url(self, url: str, headers: dict[str, str]) -> dict:
         request = urllib.request.Request(url, headers=headers, method="DELETE")
-        with urllib.request.urlopen(request, timeout=10) as response:
+        with self.open_request(request, timeout=10) as response:
             return json.loads(response.read().decode("utf-8"))
 
     def delete_entry(self, entry_id: str) -> None:
@@ -486,7 +494,7 @@ class UploadClient:
             self.delete_url(endpoint, headers)
         except (OSError, ValueError, KeyError, urllib.error.HTTPError) as error:
             self.root.after(0, lambda: self.status.set("删除登记失败"))
-            self.root.after(0, lambda: messagebox.showerror("删除登记失败", str(error)))
+            self.root.after(0, messagebox.showerror, "删除登记失败", str(error))
             return
         self.root.after(0, self.refresh_registered)
 
@@ -507,7 +515,7 @@ class UploadClient:
             self.delete_url(endpoint, headers)
         except (OSError, ValueError, KeyError, urllib.error.HTTPError) as error:
             self.root.after(0, lambda: self.status.set("清空登记失败"))
-            self.root.after(0, lambda: messagebox.showerror("清空登记失败", str(error)))
+            self.root.after(0, messagebox.showerror, "清空登记失败", str(error))
             return
         self.root.after(0, self.refresh_registered)
 
@@ -540,7 +548,8 @@ class UploadClient:
 
     def test_connection(self) -> None:
         try:
-            with urllib.request.urlopen(self.endpoint("/api/health"), timeout=3) as response:
+            request = urllib.request.Request(self.endpoint("/api/health"))
+            with self.open_request(request, timeout=3) as response:
                 if response.status != 200:
                     raise RuntimeError(f"HTTP {response.status}")
             self.status.set("服务器连接正常")
@@ -570,7 +579,7 @@ class UploadClient:
             )
         except (OSError, ValueError, KeyError, urllib.error.HTTPError) as error:
             self.root.after(0, lambda: self.status.set("登记失败"))
-            self.root.after(0, lambda: messagebox.showerror("登记失败", str(error)))
+            self.root.after(0, messagebox.showerror, "登记失败", str(error))
             return
         self.root.after(0, self.refresh_registered)
 
