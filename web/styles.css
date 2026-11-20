@@ -16,8 +16,10 @@ h1 { margin: 0; font-size: 24px; font-weight: 650; }
 .file-row { display: flex; align-items: center; gap: 16px; min-height: 46px; border-bottom: 1px solid #e8ebed; color: inherit; padding: 8px 12px; text-decoration: none; }
 .file-row:hover { background: #f3f7f5; }
 .file-link { flex: 1; min-width: 0; color: inherit; text-decoration: none; padding: 8px 0; }
-.file-link:focus-visible, .copy-address:focus-visible { outline: 2px solid #245565; outline-offset: 2px; }
-.copy-address { flex: 0 0 auto; min-height: 36px; font-size: 13px; }
+.file-link:focus-visible, .file-actions > :focus-visible { outline: 2px solid #245565; outline-offset: 2px; }
+.file-actions { display: flex; flex: 0 0 auto; gap: 8px; }
+.file-actions > .button { display: inline-flex; align-items: center; min-height: 36px; font-size: 13px; }
+.zip-download { min-width: calc(5em + 24px); justify-content: center; white-space: nowrap; }
 .file-info { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
 .file-icon { flex: 0 0 20px; font-size: 16px; line-height: 1; text-align: center; }
 .file-name { overflow-wrap: anywhere; font-size: 14px; }
@@ -29,6 +31,7 @@ h1 { margin: 0; font-size: 24px; font-weight: 650; }
 
 @media (max-width: 640px) {
   .page-shell { width: min(100% - 24px, 820px); padding-top: 20px; }
-  .file-row { align-items: flex-start; }
+  .file-row { align-items: flex-start; gap: 8px; }
+  .file-kind { display: none; }
   .file-info { align-items: flex-start; flex-direction: column; gap: 2px; }
 }

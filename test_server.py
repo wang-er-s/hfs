@@ -1,18 +1,47 @@
 from __future__ import annotations
 
 import http.client
+import io
+import json
 import socket
 import sqlite3
 import tempfile
 import threading
 import time
 import unittest
+from errno import EADDRINUSE
 from http.client import HTTPMessage
 from pathlib import Path
+from urllib.parse import urlencode
 from unittest.mock import patch
+from zipfile import ZipFile
 
 import server
 from hfs_runtime import RuntimeState
+
+
+class ServerControllerTests(unittest.TestCase):
+    def test_port_switch_rejects_existing_loopback_listener(self):
+        controller = server.ServerController("0.0.0.0", 0)
+        controller.start()
+        self.addCleanup(controller.stop)
+        original_server = controller.http_server
+        assert original_server is not None
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen()
+            with self.assertRaises(OSError) as raised:
+                controller.change_port(listener.getsockname()[1])
+
+        self.assertEqual(raised.exception.errno, EADDRINUSE)
+        self.assertIs(controller.http_server, original_server)
+        connection = http.client.HTTPConnection(
+            "127.0.0.1", original_server.server_port, timeout=3
+        )
+        self.addCleanup(connection.close)
+        connection.request("GET", "/api/health")
+        with connection.getresponse() as response:
+            self.assertEqual(response.status, 200)
 
 
 class DatabaseConnectionTests(unittest.TestCase):
@@ -46,6 +75,52 @@ class DatabaseConnectionTests(unittest.TestCase):
             connection.execute("SELECT 1")
         with server.db_connection() as reopened:
             self.assertEqual(reopened.execute("SELECT count(*) FROM entries").fetchone()[0], 0)
+
+
+class ZipDownloadTests(unittest.TestCase):
+    def test_public_zip_download(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        database = patch.object(server, "DATABASE_PATH", Path(self.directory.name) / "db.sqlite3")
+        database.start()
+        self.addCleanup(database.stop)
+        root = Path(self.directory.name) / "共享 %23"
+        nested = root / "子目录 #"
+        (nested / "empty").mkdir(parents=True)
+        (nested / "file.txt").write_bytes(b"archive contents")
+        outside = root.with_name("private.txt")
+        outside.write_bytes(b"not shared")
+        try:
+            (nested / "link").symlink_to(outside)
+        except (NotImplementedError, OSError):
+            pass
+        server.initialize_database()
+        controller = server.ServerController("127.0.0.1", 0)
+        controller.start()
+        self.addCleanup(controller.stop)
+        connection = http.client.HTTPConnection("127.0.0.1", controller.http_server.server_port, timeout=3)
+        self.addCleanup(connection.close)
+
+        def request(path, payload=None):
+            connection.request("POST" if payload else "GET", path, json.dumps(payload) if payload else None)
+            with connection.getresponse() as response:
+                return response.status, response.headers, response.read()
+
+        with patch.object(server, "REGISTER_TOKEN", ""):
+            status, _, _ = request("/api/register", {"files": [{"source_path": str(root), "kind": "directory"}]})
+        self.assertEqual(status, 200)
+        shared = json.loads(request("/api/files")[2])["batches"][0]["files"][0]
+        status, headers, body = request(shared["zip_url"])
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Type"], "application/zip")
+        with ZipFile(io.BytesIO(body)) as archive:
+            self.assertEqual(set(archive.namelist()), {"子目录 #/", "子目录 #/empty/", "子目录 #/file.txt"})
+            self.assertEqual(archive.read("子目录 #/file.txt"), b"archive contents")
+        query = urlencode({"path": shared["browse_url"]})
+        entries = json.loads(request(f"/api/public-directory?{query}")[2])["entries"]
+        self.assertEqual(request(entries[0]["zip_url"])[0], 200)
+        self.assertEqual(request(entries[0]["zip_url"] + "%2Ffile.txt")[0], 404)
+        self.assertEqual(request(entries[0]["zip_url"] + "%2F..%2Fprivate.txt")[0], 400)
 
 
 class VideoTransferTests(unittest.TestCase):

@@ -3,6 +3,9 @@ const emptyElement = document.querySelector("#empty");
 const statusElement = document.querySelector("#status");
 const refreshButton = document.querySelector("#refresh");
 let loading = false;
+const zipStatus = document.querySelector("#zip-status");
+let activeZip = null;
+let zipFrame = null;
 
 function element(tag, className, text) {
   const node = document.createElement(tag);
@@ -31,6 +34,58 @@ async function copyAddress(address) {
   }
 }
 
+function updateZipButton(button) {
+  const pending = button.dataset.url === activeZip;
+  button.disabled = activeZip !== null;
+  button.textContent = pending ? "正在压缩…" : "压缩下载";
+  button.setAttribute("aria-label", `${button.textContent} ${button.dataset.name}`);
+}
+
+function startZip(button) {
+  if (activeZip !== null) return;
+  const url = new URL(button.dataset.url, window.location.href);
+  const ticket = Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  const cookie = `hfs_zip_${ticket}`;
+  url.searchParams.set("ticket", ticket);
+  activeZip = button.dataset.url;
+  zipStatus.textContent = `正在压缩：${button.dataset.name}`;
+  batchesElement.querySelectorAll(".zip-download").forEach(updateZipButton);
+
+  if (zipFrame) zipFrame.remove();
+  const frame = zipFrame = element("iframe");
+  frame.hidden = true;
+  frame.title = "压缩下载";
+  frame.setAttribute("sandbox", "allow-downloads allow-same-origin");
+  function finish(message, keepFrame = false) {
+    clearInterval(poll);
+    clearTimeout(timeout);
+    if (!keepFrame) frame.remove();
+    activeZip = null;
+    zipStatus.textContent = message;
+    batchesElement.querySelectorAll(".zip-download").forEach(updateZipButton);
+  }
+
+  frame.addEventListener("load", () => {
+    let message = "压缩下载失败，请重试";
+    try {
+      const error = JSON.parse(frame.contentDocument.body.textContent).error;
+      if (error) message = `压缩下载失败：${error}`;
+    } catch {
+      // 网络错误页面不一定可读，也不一定返回 JSON。
+    }
+    finish(message);
+  }, { once: true });
+  // 附件响应不会触发 iframe load；用短期 Cookie 确认下载已交给浏览器。
+  const poll = setInterval(() => {
+    if (!document.cookie.split(/;\s*/).includes(`${cookie}=1`)) return;
+    document.cookie = `${cookie}=; Path=/; Max-Age=0`;
+    finish("压缩完成，已交给浏览器下载", true);
+  }, 250);
+  const timeout = setTimeout(() => finish("未确认下载状态，请查看浏览器下载列表后重试"), 30 * 60 * 1000);
+  frame.src = url.href;
+  document.body.append(frame);
+}
+
 function itemLink(item) {
   const isDirectory = item.kind === "directory";
   const row = element("div", "file-row");
@@ -54,7 +109,18 @@ function itemLink(item) {
       statusElement.textContent = `复制失败：${error.message}`;
     }
   });
-  row.append(link, copy);
+  const actions = element("div", "file-actions");
+  actions.append(copy);
+  if (isDirectory && item.zip_url) {
+    const zip = element("button", "button zip-download");
+    zip.type = "button";
+    zip.dataset.url = item.zip_url;
+    zip.dataset.name = item.path || item.name;
+    updateZipButton(zip);
+    zip.addEventListener("click", () => startZip(zip));
+    actions.append(zip);
+  }
+  row.append(link, actions);
   return row;
 }
 
@@ -73,7 +139,7 @@ function renderHome(batches) {
 }
 
 function currentDirectory() {
-  return decodeURIComponent(window.location.pathname).replace(/^\/+/, "");
+  return window.location.pathname.replace(/^\/+/, "");
 }
 
 function renderDirectory(directory) {

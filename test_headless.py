@@ -20,12 +20,13 @@ BASE_DIR = Path(__file__).resolve().parent
 
 class HeadlessTests(unittest.TestCase):
     def test_headless_without_tk_and_graceful_shutdown(self):
-        for stop_signal in (signal.SIGINT, signal.SIGTERM):
-            with self.subTest(signal=stop_signal), tempfile.TemporaryDirectory() as directory:
+        for stop_signal, use_cli_port in ((signal.SIGINT, False), (signal.SIGTERM, True)):
+            with self.subTest(signal=stop_signal, cli_port=use_cli_port), tempfile.TemporaryDirectory() as directory:
                 with socket.socket() as listener:
                     listener.bind(("127.0.0.1", 0))
                     port = listener.getsockname()[1]
-                environment = dict(os.environ, HFS_HOST="127.0.0.1", HFS_PORT=str(port),
+                environment = dict(os.environ, HFS_HOST="127.0.0.1",
+                                   HFS_PORT="invalid" if use_cli_port else str(port),
                                    HFS_DATABASE=str(Path(directory) / "test.sqlite3"), HFS_FRPC="0")
                 script = '''
 import importlib.abc
@@ -36,10 +37,13 @@ class NoTk(importlib.abc.MetaPathFinder):
         if fullname.split('.')[0] in {'tkinter', '_tkinter', 'tkinterdnd2', 'client'}:
             raise AssertionError('Headless imported GUI: ' + fullname)
 sys.meta_path.insert(0, NoTk())
-sys.argv = ['server.py', '--headless']
+sys.argv = ['server.py', '--headless', *sys.argv[1:]]
 runpy.run_path('server.py', run_name='__main__')
 '''
-                process = subprocess.Popen([sys.executable, "-u", "-c", script], cwd=BASE_DIR,
+                command = [sys.executable, "-u", "-c", script]
+                if use_cli_port:
+                    command.extend(["--port", str(port)])
+                process = subprocess.Popen(command, cwd=BASE_DIR,
                                            env=environment, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                            text=True)
                 output = ""
@@ -67,6 +71,17 @@ runpy.run_path('server.py', run_name='__main__')
                     if process.poll() is None:
                         process.kill()
                     process.communicate()
+
+    def test_invalid_cli_port_is_rejected(self):
+        for port in ("0", "65536", "invalid"):
+            with self.subTest(port=port):
+                result = subprocess.run(
+                    [sys.executable, "server.py", "--headless", "--port", port],
+                    cwd=BASE_DIR, capture_output=True, text=True, timeout=5,
+                )
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("--port:", result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
 
 
 if __name__ == "__main__":

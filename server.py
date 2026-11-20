@@ -5,20 +5,26 @@ import json
 import mimetypes
 import os
 import re
+import shutil
 import signal
-import subprocess
 import sqlite3
 import socket
+import stat
+import subprocess
+import tempfile
 import threading
 import time
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from errno import EADDRINUSE
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import BinaryIO
 from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
+from zipfile import ZIP_DEFLATED, ZipFile
 
 from hfs_runtime import RUNTIME_STATE
 from hfs_settings import (
@@ -42,6 +48,7 @@ WEB_ROOT = BASE_DIR / "web"
 REGISTER_TOKEN = os.environ.get("HFS_REGISTER_TOKEN", "").strip()
 FILE_ID_RE = re.compile(r"^[a-f0-9]{32}$")
 DB_LOCK = threading.Lock()
+ZIP_DOWNLOAD_SLOT = threading.BoundedSemaphore()
 
 
 def utc_now() -> str:
@@ -125,6 +132,10 @@ def public_url(relative: Path) -> str:
     return "/" + "/".join(quote(part, safe="") for part in relative.parts)
 
 
+def zip_url(relative: Path) -> str:
+    return f"/api/download-zip?{urlencode({'path': public_url(relative)})}"
+
+
 def lan_addresses() -> list[str]:
     addresses = set()
     try:
@@ -171,6 +182,15 @@ class ServerController:
         return port
 
     def _replace_server(self, port: int) -> None:
+        if port and self.host in {"", "0.0.0.0"}:
+            # shortcut: catches existing loopback listeners, use exclusive binding if concurrent binds matter.
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=1):
+                    pass
+            except ConnectionRefusedError:
+                pass
+            else:
+                raise OSError(EADDRINUSE, f"本机端口 {port} 已被占用，请更换端口")
         new_server = ThreadingHTTPServer((self.host, port), HfsHandler)
         new_thread = threading.Thread(target=new_server.serve_forever, daemon=True)
         with self.lock:
@@ -295,6 +315,9 @@ class HfsHandler(BaseHTTPRequestHandler):
                 self.list_files()
             elif path == "/api/public-directory":
                 self.list_public_directory(parse_qs(parsed.query).get("path", [""])[0])
+            elif path == "/api/download-zip":
+                query = parse_qs(parsed.query)
+                self.download_zip(query.get("path", [""])[0], query.get("ticket", [""])[0])
             elif path.startswith("/api/directory/"):
                 self.list_directory(path.removeprefix("/api/directory/"), parsed.query)
             elif path.startswith("/browse/"):
@@ -429,13 +452,15 @@ class HfsHandler(BaseHTTPRequestHandler):
             if child.is_symlink() or not (child.is_dir() or child.is_file()):
                 continue
             child_route = Path(root_name) / relative / child.name
-            entries.append(
-                {
-                    "name": child.name,
-                    "kind": "directory" if child.is_dir() else "file",
-                    "url": public_url(child_route),
-                }
-            )
+            is_directory = child.is_dir()
+            entry = {
+                "name": child.name,
+                "kind": "directory" if is_directory else "file",
+                "url": public_url(child_route),
+            }
+            if is_directory:
+                entry["zip_url"] = zip_url(child_route)
+            entries.append(entry)
 
         current_route = Path(root_name) / relative
         parent_url = public_url(current_route.parent) if relative.parts else "/"
@@ -486,6 +511,8 @@ class HfsHandler(BaseHTTPRequestHandler):
                     if is_root_item
                     else f"/browse/{row['file_id']}"
                 )
+                if is_root_item and item["available"]:
+                    item["zip_url"] = zip_url(Path(row["display_path"]))
             else:
                 try:
                     item["size"] = source.stat().st_size
@@ -640,12 +667,79 @@ class HfsHandler(BaseHTTPRequestHandler):
             }
         )
 
+    def download_zip(self, raw_path: str, ticket: str) -> None:
+        resource = self.public_resource(raw_path)
+        if resource is None:
+            return
+        row, directory, relative = resource
+        root = Path(row["source_path"]).expanduser().resolve()
+        if row["kind"] != "directory" or directory != root / relative or not directory.is_dir():
+            self.send_error_json(HTTPStatus.NOT_FOUND, "directory not found")
+            return
+        if not ZIP_DOWNLOAD_SLOT.acquire(blocking=False):
+            self.send_error_json(HTTPStatus.SERVICE_UNAVAILABLE, "已有压缩下载进行中，请稍后重试")
+            return
+        try:
+            with tempfile.TemporaryFile() as output:
+                try:
+                    with ZipFile(output, "w", ZIP_DEFLATED) as archive:
+                        self.archive_directory(directory, archive)
+                except ValueError:
+                    self.send_error_json(HTTPStatus.BAD_REQUEST, "目录包含不支持的文件名")
+                    return
+                except OSError:
+                    self.send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, "无法读取目录或创建 ZIP")
+                    return
+                self.send_open_file(
+                    output, f"{directory.name or 'folder'}.zip", output.tell(), zip_ticket=ticket
+                )
+        except (ConnectionError, TimeoutError):
+            self.close_connection = True
+        finally:
+            ZIP_DOWNLOAD_SLOT.release()
+
+    @staticmethod
+    def archive_directory(directory: Path, archive: ZipFile) -> None:
+        def raise_walk_error(error: OSError) -> None:
+            raise error
+
+        flags = getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        for current, dirs, files in os.walk(directory, onerror=raise_walk_error):
+            kept_dirs = []
+            for name in dirs + files:
+                child = Path(current) / name
+                metadata = child.lstat()
+                if stat.S_ISLNK(metadata.st_mode) or (
+                    getattr(metadata, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT
+                ):
+                    continue
+                if not child.resolve().is_relative_to(directory):
+                    raise OSError("directory changed during compression")
+                if "\\" in name or ":" in name or name.rstrip(" .") != name:
+                    raise ValueError("unsafe ZIP entry name")
+                relative = child.relative_to(directory).as_posix()
+                if stat.S_ISDIR(metadata.st_mode):
+                    kept_dirs.append(name)
+                    archive.writestr(f"{relative}/", b"")
+                elif stat.S_ISREG(metadata.st_mode):
+                    with open(child, "rb", opener=lambda path, mode: os.open(path, mode | flags)) as source:
+                        if not os.path.samestat(metadata, os.fstat(source.fileno())):
+                            raise OSError("file changed during compression")
+                        with archive.open(relative, "w", force_zip64=True) as target:
+                            shutil.copyfileobj(source, target)
+            dirs[:] = kept_dirs
+
     def send_source_file(self, source: Path) -> None:
         if not source.is_file():
             self.send_error_json(HTTPStatus.NOT_FOUND, "source file is no longer available")
             return
-        size = source.stat().st_size
-        content_type = mimetypes.guess_type(source.name)[0] or "application/octet-stream"
+        with source.open("rb") as file_handle:
+            self.send_open_file(file_handle, source.name, os.fstat(file_handle.fileno()).st_size)
+
+    def send_open_file(
+        self, file_handle: BinaryIO, name: str, size: int, *, zip_ticket: str = ""
+    ) -> None:
+        content_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
         start, end = 0, max(size - 1, 0)
         status = HTTPStatus.OK
         range_header = self.headers.get("Range")
@@ -669,8 +763,11 @@ class HfsHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
         self.send_header(
             "Content-Disposition",
-            f"attachment; filename*=UTF-8''{quote(source.name)}",
+            f"attachment; filename*=UTF-8''{quote(name)}",
         )
+        if FILE_ID_RE.fullmatch(zip_ticket):
+            self.send_header("Set-Cookie", f"hfs_zip_{zip_ticket}=1; Path=/; Max-Age=120; SameSite=Lax")
+            self.send_header("Cache-Control", "no-store")
         self.end_headers()
         if self.command == "HEAD" or length == 0:
             return
@@ -678,24 +775,23 @@ class HfsHandler(BaseHTTPRequestHandler):
         started_at = time.monotonic()
         chunk_size = min(DOWNLOAD_LIMITER.chunk_size(), 64 * 1024)
         download_id = RUNTIME_STATE.start_download(
-            self.client_address[0], source.name, length, self.path
+            self.client_address[0], name, length, self.path
         )
         outcome = "failed"
         try:
-            with source.open("rb") as file_handle:
-                file_handle.seek(start)
-                remaining = length
-                while remaining > 0:
-                    chunk = file_handle.read(min(chunk_size, remaining))
-                    if not chunk:
-                        break
-                    self.wfile.write(chunk)
-                    remaining -= len(chunk)
-                    bytes_sent += len(chunk)
-                    RUNTIME_STATE.advance_download(download_id, bytes_sent)
-                    DOWNLOAD_LIMITER.throttle(bytes_sent, started_at)
-                if remaining == 0:
-                    outcome = "completed"
+            file_handle.seek(start)
+            remaining = length
+            while remaining > 0:
+                chunk = file_handle.read(min(chunk_size, remaining))
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                remaining -= len(chunk)
+                bytes_sent += len(chunk)
+                RUNTIME_STATE.advance_download(download_id, bytes_sent)
+                DOWNLOAD_LIMITER.throttle(bytes_sent, started_at)
+            if remaining == 0:
+                outcome = "completed"
         except (ConnectionError, TimeoutError):
             outcome = "cancelled"
         except OSError:
@@ -824,7 +920,13 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="HFS 本地文件共享与视频服务")
     parser.add_argument("--headless", action="store_true", help="无头模式，不打开桌面窗口，也不需要 Tk")
+    parser.add_argument("--port", metavar="PORT", help="监听端口（1–65535），优先于 HFS_PORT 和保存的设置")
     args = parser.parse_args()
+    try:
+        port = parse_port(args.port) if args.port is not None else configured_port()
+    except ValueError as error:
+        source = "--port" if args.port is not None else "HFS_PORT"
+        parser.error(f"{source}: {error}")
 
     TkinterDnD = None
     UploadClient = None
@@ -844,7 +946,6 @@ def main() -> None:
     install_terminal_log()
     initialize_database()
     host = os.environ.get("HFS_HOST", "0.0.0.0")
-    port = configured_port()
     close_existing_hfs(port)
     server_controller = ServerController(host, port)
     frpc_process = None
@@ -859,7 +960,10 @@ def main() -> None:
             previous_handlers[signum] = signal.signal(signum, request_stop)
 
     try:
-        server_controller.start()
+        try:
+            server_controller.start()
+        except OSError as error:
+            raise SystemExit(f"HFS 无法监听 {host}:{port}：{error}") from error
         print(f"HFS listening on http://{host}:{port}")
         print(f"登记数据库: {DATABASE_PATH}")
         print(f"本机访问: http://127.0.0.1:{port}")

@@ -529,8 +529,8 @@ class UploadClient:
     def load_registered(self, endpoint: str) -> None:
         try:
             data = self.get_json(endpoint)
-        except (OSError, ValueError, KeyError, urllib.error.HTTPError):
-            self.root.after(0, lambda: self.status.set("读取已登记项目失败"))
+        except (OSError, ValueError, KeyError, urllib.error.HTTPError) as error:
+            self.root.after(0, self.status.set, f"读取已登记项目失败: {error}")
             return
         self.root.after(0, lambda: self.show_registered(data))
 
@@ -563,9 +563,6 @@ class UploadClient:
         if not files:
             self.status.set("没有找到可登记的文件")
             return
-        self.clear_entry_rows()
-        for file in files:
-            self.add_entry_row(file)
         self.status.set(f"正在登记 {len(files)} 个项目…")
         threading.Thread(target=self.register_files, args=(paths, files), daemon=True).start()
 
